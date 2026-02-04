@@ -3,9 +3,6 @@ import pandas as pd
 import io
 from datetime import datetime
 
-# =============================
-# CONFIGURAÇÃO
-# =============================
 st.set_page_config(page_title="Calculadora", page_icon="🧮", layout="wide")
 st.title("💸 Calculadora de Cashback e Relatórios")
 
@@ -14,10 +11,24 @@ abas = st.tabs(["📊 Cashback", "🎯 Relatório Detalhado"])
 # =============================
 # FUNÇÕES AUXILIARES
 # =============================
+def calcular_percentual(qtd_rodadas):
+    regras = [
+        (25, 59, 0.05), (60, 94, 0.06), (95, 129, 0.07),
+        (130, 164, 0.08), (165, 199, 0.09), (200, 234, 0.10),
+        (235, 269, 0.11), (270, 304, 0.12), (305, 339, 0.13),
+        (340, 374, 0.14), (375, 409, 0.15), (410, 444, 0.16)
+    ]
+    if qtd_rodadas >= 445:
+        return 0.17
+    for mn, mx, p in regras:
+        if mn <= qtd_rodadas <= mx:
+            return p
+    return 0
+
 def converter_numero(valor):
     if pd.isna(valor):
         return 0
-    v = str(valor).strip().replace(" ", "")
+    v = str(valor).replace(" ", "")
     if "," in v and "." in v:
         v = v.replace(".", "").replace(",", ".")
     elif "," in v:
@@ -30,24 +41,77 @@ def converter_numero(valor):
 def formatar_brl(valor):
     return f"R${valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
-def formatar_data(data):
-    if pd.isna(data):
+def formatar_data_br(dt):
+    if pd.isna(dt):
         return "-"
-    return data.strftime("%d-%m-%Y")
+    return dt.strftime("%d/%m/%Y %H:%M")
 
-def mostrar_lucro(lucro):
-    if lucro > 0:
-        return f"💰 <span style='color:green;'>Lucro do jogador: {formatar_brl(lucro)}</span>"
-    elif lucro < 0:
-        return f"💸 <span style='color:red;'>Prejuízo do jogador: {formatar_brl(lucro)}</span>"
-    else:
-        return f"⚖️ <span style='color:gray;'>Sem lucro ou prejuízo</span>"
+def carregar_csv(uploaded_file):
+    raw = uploaded_file.read().decode("utf-8")
+    sep = "," if raw.count(",") > raw.count(";") else ";"
+    return pd.read_csv(io.StringIO(raw), sep=sep)
+
+def detectar_colunas_rodadas(df):
+    return {
+        "jogo": next((c for c in df.columns if any(x in c.lower() for x in ["game", "nome"])), None),
+        "bet": next((c for c in df.columns if "bet" in c.lower()), None),
+        "payout": next((c for c in df.columns if "payout" in c.lower()), None),
+        "data": next((c for c in df.columns if any(x in c.lower() for x in ["date", "creation"])), None),
+        "free": next((c for c in df.columns if "free" in c.lower()), None),
+    }
+
+def detectar_colunas_transacoes(df):
+    col_valor = next((c for c in df.columns if any(x in c.lower() for x in ["amount", "valor", "value", "delta"])), None)
+    col_tipo = next((c for c in df.columns if any(x in c.lower() for x in ["type", "operation", "action", "transaction"])), None)
+    return col_valor, col_tipo
+
+def classificar_transacao(tipo):
+    if any(x in tipo for x in ["deposit", "cash in", "add"]):
+        return "deposito"
+    if any(x in tipo for x in ["withdraw", "cash out"]):
+        return "saque"
+    return "outros"
 
 # =============================
 # ABA 1 - CASHBACK (INALTERADA)
 # =============================
 with abas[0]:
-    st.info("📊 Aba de Cashback mantida separada conforme solicitado.")
+    st.header("📊 Cálculo de Cashback")
+
+    uploaded_file = st.file_uploader("Envie o arquivo CSV do jogador", type=["csv"], key="aba1")
+
+    if uploaded_file:
+        try:
+            df = carregar_csv(uploaded_file)
+
+            if "Client" in df.columns:
+                st.markdown(f"### 🆔 ID do Jogador: {df['Client'].iloc[0]}")
+
+            col_bet = next(c for c in df.columns if "bet" in c.lower())
+            col_payout = next(c for c in df.columns if "payout" in c.lower())
+            col_free = next((c for c in df.columns if "free" in c.lower()), None)
+
+            df[col_bet] = df[col_bet].apply(converter_numero)
+            df[col_payout] = df[col_payout].apply(converter_numero)
+
+            if col_free:
+                df = df[df[col_free].astype(str).str.lower() == "false"]
+
+            soma_b = df[col_bet].sum()
+            soma_p = df[col_payout].sum()
+            diff = soma_b - soma_p
+            qtd = len(df)
+            perc = calcular_percentual(qtd)
+            cashback = diff * perc
+
+            st.write(f"💰 Total apostado: {formatar_brl(soma_b)}")
+            st.write(f"🏆 Total payout: {formatar_brl(soma_p)}")
+            st.write(f"🎲 Rodadas: {qtd}")
+            st.write(f"📈 Percentual: {perc*100:.0f}%")
+            st.write(f"💸 Cashback: {formatar_brl(cashback)}")
+
+        except Exception as e:
+            st.error(e)
 
 # =============================
 # ABA 2 - RELATÓRIO DETALHADO
@@ -55,121 +119,119 @@ with abas[0]:
 with abas[1]:
     st.header("🎯 Relatório Detalhado do Jogador")
 
-    col_a, col_b = st.columns(2)
+    col1, col2 = st.columns(2)
+    with col1:
+        csv_rodadas = st.file_uploader("🎰 CSV de Rodadas", type=["csv"])
+    with col2:
+        csv_transacoes = st.file_uploader("💳 CSV de Transações", type=["csv"])
 
-    with col_a:
-        file_rodadas = st.file_uploader("🎰 CSV de Rodadas", type=["csv"], key="rodadas")
+    if not csv_rodadas or not csv_transacoes:
+        st.warning("⚠️ Envie os DOIS arquivos para gerar o relatório.")
+        st.stop()
 
-    with col_b:
-        file_transacoes = st.file_uploader("💳 CSV de Transações", type=["csv"], key="transacoes")
+    try:
+        df_r = carregar_csv(csv_rodadas)
+        df_t = carregar_csv(csv_transacoes)
 
-    if file_rodadas and file_transacoes:
-        try:
-            # =============================
-            # LEITURA DOS CSVs
-            # =============================
-            raw_r = file_rodadas.read().decode("utf-8")
-            sep_r = "," if raw_r.count(",") > raw_r.count(";") else ";"
-            df_r = pd.read_csv(io.StringIO(raw_r), sep=sep_r)
+        player_id = df_r["Client"].iloc[0] if "Client" in df_r.columns else "N/A"
 
-            raw_t = file_transacoes.read().decode("utf-8")
-            sep_t = "," if raw_t.count(",") > raw_t.count(";") else ";"
-            df_t = pd.read_csv(io.StringIO(raw_t), sep=sep_t)
+        # ---------- RODADAS ----------
+        cols = detectar_colunas_rodadas(df_r)
 
-            # =============================
-            # ID DO JOGADOR
-            # =============================
-            if "Client" in df_r.columns:
-                player_id = df_r["Client"].iloc[0]
-                st.markdown(f"## 🆔 Jogador: `{player_id}`")
+        df_r[cols["bet"]] = df_r[cols["bet"]].apply(converter_numero)
+        df_r[cols["payout"]] = df_r[cols["payout"]].apply(converter_numero)
+        df_r[cols["data"]] = pd.to_datetime(df_r[cols["data"]], errors="coerce")
 
-            # =============================
-            # MAPEAR COLUNAS RODADAS
-            # =============================
-            col_jogo = next(c for c in df_r.columns if "game" in c.lower() or "nome" in c.lower())
-            col_bet = next(c for c in df_r.columns if "bet" in c.lower())
-            col_payout = next(c for c in df_r.columns if "payout" in c.lower())
-            col_data = next(c for c in df_r.columns if "date" in c.lower() or "creation" in c.lower())
-            col_free = next((c for c in df_r.columns if "free" in c.lower()), None)
+        primeira_jogada = df_r[cols["data"]].min()
+        ultima_jogada = df_r[cols["data"]].max()
 
-            df_r[col_bet] = df_r[col_bet].apply(converter_numero)
-            df_r[col_payout] = df_r[col_payout].apply(converter_numero)
-            df_r[col_data] = pd.to_datetime(df_r[col_data], errors="coerce")
+        # ---------- TRANSAÇÕES ----------
+        col_valor, col_tipo = detectar_colunas_transacoes(df_t)
+        col_status = next(
+            (c for c in df_t.columns if "processing" in c.lower()),
+            None
+        )
 
-            if col_free:
-                df_r["Free Spin"] = df_r[col_free].astype(str).str.lower()
-            else:
-                df_r["Free Spin"] = "false"
+        if not col_status:
+            raise Exception("Coluna 'Processing Status' não encontrada no CSV de transações.")
 
-            # =============================
-            # MAPEAR COLUNAS TRANSAÇÕES
-            # =============================
-            col_valor = next(c for c in df_t.columns if "amount" in c.lower() or "valor" in c.lower())
-            col_tipo = next(c for c in df_t.columns if "type" in c.lower() or "transaction" in c.lower())
-            col_status = next(c for c in df_t.columns if "processing" in c.lower())
-            col_data_t = next(c for c in df_t.columns if "date" in c.lower() or "creation" in c.lower())
+        df_t[col_valor] = df_t[col_valor].apply(converter_numero)
+        df_t[col_tipo] = df_t[col_tipo].astype(str).str.lower()
+        df_t[col_status] = df_t[col_status].astype(str).str.upper()
 
-            df_t[col_valor] = df_t[col_valor].apply(converter_numero)
-            df_t[col_tipo] = df_t[col_tipo].astype(str).str.lower()
-            df_t[col_status] = df_t[col_status].astype(str).str.upper()
-            df_t[col_data_t] = pd.to_datetime(df_t[col_data_t], errors="coerce")
+        df_t["Categoria"] = df_t[col_tipo].apply(classificar_transacao)
 
-            # =============================
-            # FILTRAR TRANSAÇÕES
-            # =============================
-            df_completas = df_t[df_t[col_status] == "COMPLETED"]
-            df_manual = df_t[df_t[col_status] == "MANUAL_APPROVE_REQUIRED"]
+        # COMPLETED
+        trans_completas = df_t[
+            (df_t[col_status] == "COMPLETED")
+        ]
 
-            depositos = df_completas[df_completas[col_tipo].str.contains("deposit")][col_valor].sum()
-            saques = df_completas[df_completas[col_tipo].str.contains("withdraw")][col_valor].sum()
+        depositos = trans_completas[
+            trans_completas["Categoria"] == "deposito"
+        ][col_valor].sum()
 
-            # =============================
-            # VISÃO GERAL DE RODADAS
-            # =============================
-            st.divider()
-            st.subheader("🎲 Visão Geral das Rodadas")
+        saques = trans_completas[
+            trans_completas["Categoria"] == "saque"
+        ][col_valor].sum()
 
-            total_reais = df_r[df_r["Free Spin"] == "false"]
-            total_gratis = df_r[df_r["Free Spin"] == "true"]
+        # MANUAL APPROVE REQUIRED
+        trans_pendentes = df_t[
+            df_t[col_status] == "MANUAL_APPROVE_REQUIRED"
+        ]
 
-            st.write(f"🎰 **Rodadas reais:** {len(total_reais)}")
-            st.write(f"🎁 **Rodadas grátis:** {len(total_gratis)}")
-            st.write(f"🎯 **Total geral:** {len(df_r)}")
+        dep_pendentes = trans_pendentes[
+            trans_pendentes["Categoria"] == "deposito"
+        ][col_valor].sum()
 
-            st.write(f"📅 **Primeira jogada:** {formatar_data(df_r[col_data].min())}")
-            st.write(f"📅 **Última jogada:** {formatar_data(df_r[col_data].max())}")
+        saq_pendentes = trans_pendentes[
+            trans_pendentes["Categoria"] == "saque"
+        ][col_valor].sum()
 
-            # =============================
-            # RESUMO POR JOGO
-            # =============================
-            st.divider()
-            st.subheader("🎮 Resumo por Jogo")
+        # ---------- RELATÓRIO ----------
+        relatorio = f"""
+🎯 RELATÓRIO DETALHADO DO JOGADOR
+==================================================
 
-            resumo = df_r.groupby(col_jogo).agg(
-                Rodadas=(col_bet, "count"),
-                Apostado=(col_bet, "sum"),
-                Payout=(col_payout, "sum")
-            ).reset_index()
+🆔 ID DO JOGADOR: {player_id}
 
-            for _, row in resumo.iterrows():
-                lucro = row["Payout"] - row["Apostado"]
-                st.markdown(f"### 🎰 {row[col_jogo]}")
-                st.write(f"🎯 Rodadas: {int(row['Rodadas'])}")
-                st.write(f"💸 Apostado: {formatar_brl(row['Apostado'])}")
-                st.write(f"🏆 Payout: {formatar_brl(row['Payout'])}")
-                st.markdown(mostrar_lucro(lucro), unsafe_allow_html=True)
-                st.divider()
+🕒 PERÍODO DE ATIVIDADE
+--------------------------------------------------
+🎰 Primeira jogada ....: {formatar_data_br(primeira_jogada)}
+🎰 Última jogada ......: {formatar_data_br(ultima_jogada)}
 
-            # =============================
-            # RESUMO FINANCEIRO
-            # =============================
-            st.subheader("💳 Resumo Financeiro")
+💳 TRANSAÇÕES FINANCEIRAS (COMPLETAS)
+--------------------------------------------------
+💰 Depósitos ..........: {formatar_brl(depositos)}
+🏧 Saques .............: {formatar_brl(saques)}
 
-            st.write(f"💰 **Depósitos concluídos:** {formatar_brl(depositos)}")
-            st.write(f"🏧 **Saques concluídos:** {formatar_brl(saques)}")
+⚠️ TRANSAÇÕES PENDENTES (MANUAL APPROVE REQUIRED)
+--------------------------------------------------
+💰 Depósitos pendentes : {formatar_brl(dep_pendentes)}
+🏧 Saques pendentes ..: {formatar_brl(saq_pendentes)}
 
-            if not df_manual.empty:
-                st.warning(f"⏳ Existem **{len(df_manual)} transações pendentes de aprovação manual**.")
+🎮 RESUMO POR JOGO
+==================================================
+"""
 
-        except Exception as e:
-            st.error(f"Erro ao gerar relatório: {e}")
+        resumo = df_r.groupby(cols["jogo"]).agg(
+            Rodadas=(cols["bet"], "count"),
+            Apostado=(cols["bet"], "sum"),
+            Payout=(cols["payout"], "sum")
+        ).reset_index()
+
+        for _, r in resumo.iterrows():
+            resultado = r["Payout"] - r["Apostado"]
+
+            relatorio += f"""
+🎰 JOGO: {r[cols["jogo"]]}
+--------------------------------------------------
+🎲 Rodadas ..........: {int(r['Rodadas'])}
+💰 Apostado .........: {formatar_brl(r['Apostado'])}
+🏆 Payout ...........: {formatar_brl(r['Payout'])}
+📊 Resultado ........: {formatar_brl(resultado)}
+"""
+
+        st.text_area("📋 Relatório Final (copiar e colar)", relatorio, height=800)
+
+    except Exception as e:
+        st.error(f"Erro ao gerar relatório: {e}")
