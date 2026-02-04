@@ -41,19 +41,39 @@ def converter_numero(valor):
 def formatar_brl(valor):
     return f"R${valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
+def formatar_data_br(dt):
+    if pd.isna(dt):
+        return "-"
+    return dt.strftime("%d/%m/%Y %H:%M")
+
 def carregar_csv(uploaded_file):
     raw = uploaded_file.read().decode("utf-8")
     sep = "," if raw.count(",") > raw.count(";") else ";"
     return pd.read_csv(io.StringIO(raw), sep=sep)
 
-def detectar_colunas(df):
+def detectar_colunas_rodadas(df):
     return {
-        "jogo": next((c for c in df.columns if "game" in c.lower() or "nome" in c.lower()), None),
+        "jogo": next((c for c in df.columns if any(x in c.lower() for x in ["game", "nome"])), None),
         "bet": next((c for c in df.columns if "bet" in c.lower()), None),
         "payout": next((c for c in df.columns if "payout" in c.lower()), None),
-        "data": next((c for c in df.columns if "date" in c.lower() or "creation" in c.lower()), None),
+        "data": next((c for c in df.columns if any(x in c.lower() for x in ["date", "creation"])), None),
         "free": next((c for c in df.columns if "free" in c.lower()), None),
     }
+
+def detectar_colunas_transacoes(df):
+    col_valor = next((c for c in df.columns if any(x in c.lower() for x in ["amount", "valor", "value", "delta"])), None)
+    col_tipo = next((c for c in df.columns if any(x in c.lower() for x in ["type", "operation", "action", "transaction"])), None)
+    col_data = next((c for c in df.columns if any(x in c.lower() for x in ["date", "creation"])), None)
+    return col_valor, col_tipo, col_data
+
+def classificar_transacao(tipo):
+    if any(x in tipo for x in ["deposit", "cash in", "add"]):
+        return "deposito"
+    if any(x in tipo for x in ["withdraw", "cash out"]):
+        return "saque"
+    if "bonus" in tipo:
+        return "bonus"
+    return "outros"
 
 # =============================
 # ABA 1 - CASHBACK (INALTERADA)
@@ -100,7 +120,7 @@ with abas[0]:
 # ABA 2 - RELATÓRIO DETALHADO
 # =============================
 with abas[1]:
-    st.header("🎯 Relatório Completo do Jogador")
+    st.header("🎯 Relatório Detalhado do Jogador")
 
     col1, col2 = st.columns(2)
     with col1:
@@ -116,69 +136,85 @@ with abas[1]:
         df_r = carregar_csv(csv_rodadas)
         df_t = carregar_csv(csv_transacoes)
 
-        if "Client" in df_r.columns:
-            player_id = df_r["Client"].iloc[0]
-        else:
-            player_id = "N/A"
+        player_id = df_r["Client"].iloc[0] if "Client" in df_r.columns else "N/A"
 
-        cols = detectar_colunas(df_r)
+        # ---------- RODADAS ----------
+        cols = detectar_colunas_rodadas(df_r)
 
         df_r[cols["bet"]] = df_r[cols["bet"]].apply(converter_numero)
         df_r[cols["payout"]] = df_r[cols["payout"]].apply(converter_numero)
         df_r[cols["data"]] = pd.to_datetime(df_r[cols["data"]], errors="coerce")
 
-        if cols["free"]:
-            df_r["Free Spin"] = df_r[cols["free"]].astype(str).str.lower()
-        else:
-            df_r["Free Spin"] = "false"
+        df_r["Free Spin"] = (
+            df_r[cols["free"]].astype(str).str.lower()
+            if cols["free"] else "false"
+        )
 
-        # -----------------------------
-        # TRANSAÇÕES
-        # -----------------------------
-        col_valor = next(c for c in df_t.columns if "amount" in c.lower() or "valor" in c.lower())
-        col_tipo = next(c for c in df_t.columns if "type" in c.lower() or "transaction" in c.lower())
-        
+        primeira_jogada = df_r[cols["data"]].min()
+        ultima_jogada = df_r[cols["data"]].max()
+
+        # ---------- TRANSAÇÕES ----------
+        col_valor, col_tipo, col_data = detectar_colunas_transacoes(df_t)
+
         df_t[col_valor] = df_t[col_valor].apply(converter_numero)
         df_t[col_tipo] = df_t[col_tipo].astype(str).str.lower()
-        
-        depositos = df_t[df_t[col_tipo].str.contains("deposit")][col_valor].sum()
-        saques = df_t[df_t[col_tipo].str.contains("withdraw")][col_valor].sum()
-        bonus = df_t[df_t[col_tipo].str.contains("bonus")][col_valor].sum()
+        df_t[col_data] = pd.to_datetime(df_t[col_data], errors="coerce")
 
+        df_t["Categoria"] = df_t[col_tipo].apply(classificar_transacao)
 
-        # -----------------------------
-        # RELATÓRIO
-        # -----------------------------
+        depositos_df = df_t[df_t["Categoria"] == "deposito"]
+
+        depositos = depositos_df[col_valor].sum()
+        saques = df_t[df_t["Categoria"] == "saque"][col_valor].sum()
+        bonus = df_t[df_t["Categoria"] == "bonus"][col_valor].sum()
+
+        primeira_deposito = depositos_df[col_data].min()
+        ultimo_deposito = depositos_df[col_data].max()
+
+        # ---------- RELATÓRIO ----------
         total_ap = df_r[cols["bet"]].sum()
         total_pay = df_r[cols["payout"]].sum()
         lucro = total_pay - total_ap
 
         relatorio = f"""
 RELATÓRIO DETALHADO DO JOGADOR
-=============================
+==================================================
 
-ID DO JOGADOR: {player_id}
+🆔 ID DO JOGADOR: {player_id}
 
-1. VISÃO GERAL
------------------------------
-Total de rodadas: {len(df_r)}
-Total apostado: {formatar_brl(total_ap)}
-Total payout: {formatar_brl(total_pay)}
-Resultado do jogador: {formatar_brl(lucro)}
+==================================================
+1. PERÍODO DE ATIVIDADE
+==================================================
+Primeiro depósito ......: {formatar_data_br(primeira_deposito)}
+Último depósito ........: {formatar_data_br(ultimo_deposito)}
+Primeira jogada ........: {formatar_data_br(primeira_jogada)}
+Última jogada ..........: {formatar_data_br(ultima_jogada)}
 
-2. RODADAS
------------------------------
-Rodadas reais: {len(df_r[df_r["Free Spin"] == "false"])}
-Rodadas grátis: {len(df_r[df_r["Free Spin"] == "true"])}
+==================================================
+2. VISÃO GERAL DAS RODADAS
+==================================================
+Total de rodadas .......: {len(df_r)}
+Total apostado ........: {formatar_brl(total_ap)}
+Total payout ..........: {formatar_brl(total_pay)}
+Resultado do jogador ..: {formatar_brl(lucro)}
 
-3. TRANSAÇÕES
------------------------------
-Depósitos: {formatar_brl(depositos)}
-Saques: {formatar_brl(saques)}
-Bônus: {formatar_brl(bonus)}
+==================================================
+3. CLASSIFICAÇÃO DAS RODADAS
+==================================================
+Rodadas reais ..........: {len(df_r[df_r["Free Spin"] == "false"])}
+Rodadas grátis .........: {len(df_r[df_r["Free Spin"] == "true"])}
 
-4. RESUMO POR JOGO
------------------------------
+==================================================
+4. TRANSAÇÕES FINANCEIRAS
+==================================================
+Depósitos ..............: {formatar_brl(depositos)}
+Saques .................: {formatar_brl(saques)}
+Bônus ................: {formatar_brl(bonus)}
+Saldo líquido ..........: {formatar_brl(depositos - saques)}
+
+==================================================
+5. RESUMO POR JOGO
+==================================================
 """
 
         resumo = df_r.groupby(cols["jogo"]).agg(
@@ -189,15 +225,15 @@ Bônus: {formatar_brl(bonus)}
 
         for _, r in resumo.iterrows():
             relatorio += f"""
-Jogo: {r[cols["jogo"]]}
-- Rodadas: {int(r['Rodadas'])}
-- Apostado: {formatar_brl(r['Apostado'])}
-- Payout: {formatar_brl(r['Payout'])}
-- Resultado: {formatar_brl(r['Payout'] - r['Apostado'])}
+JOGO: {r[cols["jogo"]]}
+--------------------------------------------------
+Rodadas ..........: {int(r['Rodadas'])}
+Apostado .........: {formatar_brl(r['Apostado'])}
+Payout ..........: {formatar_brl(r['Payout'])}
+Resultado ........: {formatar_brl(r['Payout'] - r['Apostado'])}
 """
 
-        st.text_area("📋 Relatório Final (copiar e colar)", relatorio, height=700)
+        st.text_area("📋 Relatório Final (copiar e colar)", relatorio, height=750)
 
     except Exception as e:
         st.error(f"Erro ao gerar relatório: {e}")
-
