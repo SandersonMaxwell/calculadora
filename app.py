@@ -145,12 +145,11 @@ with abas[1]:
         primeira_jogada = df_r[cols["data"]].min()
         ultima_jogada = df_r[cols["data"]].max()
 
+        resultado_jogos = df_r[cols["payout"]].sum() - df_r[cols["bet"]].sum()
+
         # ---------- TRANSAÇÕES ----------
         col_valor, col_tipo = detectar_colunas_transacoes(df_t)
-        col_status = next(
-            (c for c in df_t.columns if "processing" in c.lower()),
-            None
-        )
+        col_status = next((c for c in df_t.columns if "processing" in c.lower()), None)
 
         if not col_status:
             raise Exception("Coluna 'Processing Status' não encontrada no CSV de transações.")
@@ -161,31 +160,19 @@ with abas[1]:
 
         df_t["Categoria"] = df_t[col_tipo].apply(classificar_transacao)
 
-        # COMPLETED
-        trans_completas = df_t[
-            (df_t[col_status] == "COMPLETED")
-        ]
+        trans_completas = df_t[df_t[col_status] == "COMPLETED"]
+        trans_pendentes = df_t[df_t[col_status] == "MANUAL_APPROVE_REQUIRED"]
 
         depositos = trans_completas[
             trans_completas["Categoria"] == "deposito"
         ][col_valor].sum()
 
-        saques = trans_completas[
-            trans_completas["Categoria"] == "saque"
-        ][col_valor].sum()
-
-        # MANUAL APPROVE REQUIRED
-        trans_pendentes = df_t[
-            df_t[col_status] == "MANUAL_APPROVE_REQUIRED"
-        ]
-
-        dep_pendentes = trans_pendentes[
-            trans_pendentes["Categoria"] == "deposito"
-        ][col_valor].sum()
-
         saq_pendentes = trans_pendentes[
             trans_pendentes["Categoria"] == "saque"
         ][col_valor].sum()
+
+        saldo_total = depositos + resultado_jogos
+        aprovavel = saldo_total >= saq_pendentes
 
         # ---------- RELATÓRIO ----------
         relatorio = f"""
@@ -194,20 +181,32 @@ with abas[1]:
 
 🆔 ID DO JOGADOR: {player_id}
 
-🕒 PERÍODO DE ATIVIDADE
+🕒 ATIVIDADE EM JOGOS
 --------------------------------------------------
 🎰 Primeira jogada ....: {formatar_data_br(primeira_jogada)}
 🎰 Última jogada ......: {formatar_data_br(ultima_jogada)}
 
-💳 TRANSAÇÕES FINANCEIRAS (COMPLETAS)
+💳 RESUMO FINANCEIRO CONSOLIDADO
 --------------------------------------------------
-💰 Depósitos ..........: {formatar_brl(depositos)}
-🏧 Saques .............: {formatar_brl(saques)}
+💰 Total depositado (COMPLETED) ......: {formatar_brl(depositos)}
+🏆 Resultado em jogos ................: {formatar_brl(resultado_jogos)}
+--------------------------------------------------
+📊 Saldo total gerado pelo jogador ...: {formatar_brl(saldo_total)}
 
-⚠️ TRANSAÇÕES PENDENTES (MANUAL APPROVE REQUIRED)
+⚠️ SAQUE PENDENTE DE APROVAÇÃO MANUAL
 --------------------------------------------------
-💰 Depósitos pendentes : {formatar_brl(dep_pendentes)}
-🏧 Saques pendentes ..: {formatar_brl(saq_pendentes)}
+🏧 Valor do saque pendente ...........: {formatar_brl(saq_pendentes)}
+📌 Status ............................: MANUAL_APPROVE_REQUIRED
+
+{"✅ ANÁLISE" if aprovavel else "❌ ANÁLISE"}
+--------------------------------------------------
+O valor total gerado pelo jogador ({formatar_brl(saldo_total)})
+{"É SUPERIOR ou IGUAL" if aprovavel else "É INFERIOR"}
+ao valor do saque pendente ({formatar_brl(saq_pendentes)}).
+
+{"✔️ Há saldo suficiente para cobrir o saque solicitado."
+ if aprovavel else
+ "⚠️ Saque excede o saldo gerado. Recomendada análise adicional."}
 
 🎮 RESUMO POR JOGO
 ==================================================
@@ -231,7 +230,7 @@ with abas[1]:
 📊 Resultado ........: {formatar_brl(resultado)}
 """
 
-        st.text_area("📋 Relatório Final (copiar e colar)", relatorio, height=800)
+        st.text_area("📋 Relatório Final (copiar e colar)", relatorio, height=850)
 
     except Exception as e:
         st.error(f"Erro ao gerar relatório: {e}")
