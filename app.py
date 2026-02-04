@@ -137,12 +137,14 @@ with abas[1]:
         # -----------------------------
         col_valor = next(c for c in df_t.columns if "amount" in c.lower() or "valor" in c.lower())
         col_tipo = next(c for c in df_t.columns if "type" in c.lower() or "transaction" in c.lower())
-
+        
         df_t[col_valor] = df_t[col_valor].apply(converter_numero)
+        df_t[col_tipo] = df_t[col_tipo].astype(str).str.lower()
+        
+        depositos = df_t[df_t[col_tipo].str.contains("deposit")][col_valor].sum()
+        saques = df_t[df_t[col_tipo].str.contains("withdraw")][col_valor].sum()
+        bonus = df_t[df_t[col_tipo].str.contains("bonus")][col_valor].sum()
 
-        depositos = df_t[df_t[col_tipo].str.lower().str.contains("deposit")][col_valor].sum()
-        saques = df_t[df_t[col_tipo].str.lower().str.contains("withdraw")][col_valor].sum()
-        bonus = df_t[df_t[col_tipo].str.lower().str.contains("bonus")][col_valor].sum()
 
         # -----------------------------
         # RELATÓRIO
@@ -198,3 +200,4 @@ Jogo: {r[cols["jogo"]]}
 
     except Exception as e:
         st.error(f"Erro ao gerar relatório: {e}")
+
